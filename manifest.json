@@ -1,0 +1,68 @@
+{
+  "manifest_version": 1,
+  "id": "cn.ucbk.weather",
+  "name": "天气查询",
+  "version": "1.1.0",
+  "description": "在群聊或私聊发送「天气 北京」即可查询实时天气与未来几天预报，数据来自 Open-Meteo，无需申请 API Key。\n\n用法：\n1. 发送「天气 城市名」查询指定城市；\n2. 只发送「天气」时查询默认城市，需先在插件配置里填写默认城市；\n3. 也支持「北京天气」这种写法，触发词可以在插件配置里修改；\n4. 默认带未来 3 天预报，天数可在配置里调整，填 -1 表示只显示实时天气；\n5. 同一会话在冷却时间内重复查询同一个城市会被忽略，避免刷屏。\n\n出网域名：geocoding-api.open-meteo.com 用于城市名解析，api.open-meteo.com 用于取天气数据。",
+  "author": {
+    "name": "UCBK",
+    "url": "https://www.ucbk.cn"
+  },
+  "license": "MIT",
+  "homepage": "https://www.ucbk.cn",
+  "entry": "plugin.py",
+  "capabilities": [
+    "msg.send",
+    "http.outbound"
+  ],
+  "allowed_domains": [
+    "geocoding-api.open-meteo.com",
+    "api.open-meteo.com"
+  ],
+  "config_schema": [
+    {
+      "key": "trigger_words",
+      "label": "触发词（英文逗号分隔）",
+      "type": "text",
+      "required": false,
+      "sensitive": false
+    },
+    {
+      "key": "default_city",
+      "label": "默认城市（留空则必须带上城市名）",
+      "type": "text",
+      "required": false,
+      "sensitive": false
+    },
+    {
+      "key": "forecast_days",
+      "label": "预报天数（-1 表示只显示实时天气，0 或留空默认 3 天）",
+      "type": "number",
+      "required": false,
+      "sensitive": false
+    },
+    {
+      "key": "temperature_unit",
+      "label": "温度单位",
+      "type": "select",
+      "required": false,
+      "sensitive": false,
+      "options": ["摄氏度", "华氏度"]
+    },
+    {
+      "key": "reply_scope",
+      "label": "生效范围",
+      "type": "select",
+      "required": false,
+      "sensitive": false,
+      "options": ["群聊与私聊", "仅群聊", "仅私聊"]
+    },
+    {
+      "key": "cooldown_seconds",
+      "label": "同一会话回复冷却（秒，0 表示不冷却）",
+      "type": "number",
+      "required": false,
+      "sensitive": false
+    }
+  ]
+}
