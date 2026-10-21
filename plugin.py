@@ -447,6 +447,12 @@ async def handle_weather(event: dict[str, Any], host: Any) -> None:
     if city is None:
         return
 
+    # 确认这条是天气查询，抢占处理权：AI 回复是另一条并行链路，
+    # 不声明的话它可能同时回一句不相关的内容。
+    if not await host.claim_message():
+        host.log("该消息已被其它插件接管，跳过天气查询")
+        return
+
     if not host.has("msg.send"):
         host.log("缺少 msg.send 能力，无法回复", "error")
         return
