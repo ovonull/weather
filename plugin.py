@@ -5,7 +5,9 @@
 1. 群里或私聊发「天气 北京」查询实时天气，只发「天气」时查配置里的默认城市；
 2. 支持「北京天气」「今天北京天气怎么样」这几种写法，触发词可在配置里改；
 3. 默认带未来 3 天预报，天数可调，-1 表示只显示实时天气；
-4. 温度单位、生效范围、同一会话冷却都由安装配置控制。
+4. 温度单位、生效范围、同一会话冷却都由安装配置控制；
+5. 也可作为 AI 工具（@on_tool weather_query）由模型直接调用，返回报告文本
+   给模型组织回复，不替代事件触发的主动回复。
 
 约定：
 - 城市解析走 geocoding-api.open-meteo.com，天气数据走 api.open-meteo.com，都不需要 API Key；
@@ -20,7 +22,7 @@ import time
 from datetime import date
 from typing import Any
 
-from app.services.plugin_sdk import PluginCallError, on_message
+from app.services.plugin_sdk import PluginCallError, on_message, on_tool
 
 
 DEFAULT_TRIGGERS = "天气"
@@ -499,3 +501,59 @@ async def handle_weather(event: dict[str, Any], host: Any) -> None:
     except Exception as error:  # 插件内部兜底，不让异常冒到宿主
         host.log(f"天气插件异常：{type(error).__name__}: {error}", "error")
         await _reply(host, event, "查询天气时出错了，请稍后再试。")
+
+
+@on_tool("weather_query")
+async def weather_query(arguments: dict, host: Any) -> str:
+    """AI 工具：模型直接调用查询天气，返回报告文本（不自己发消息）。
+
+    与事件触发共用同一套取数逻辑，但两点不同：
+    1. 没有会话冷却——消息触发有冷却防刷屏，模型调用没有刷屏问题，冷掉反而让
+       模型拿不到最新天气，所以工具入口不检查 _duplicated；
+    2. 返回文本而不是发消息——模型拿到报告后自己组织回复，避免「工具发一条 +
+       模型再回一条」的重复。
+
+    Args:
+        arguments: 模型给的入参，含 ``city``（必填）与可选 ``days``。
+        host: 本插件的宿主视图。
+    Returns:
+        中文天气报告文本；任何失败都返回可读的错误文本，不抛裸异常，
+        让模型知道发生了什么而不是拿到一串异常栈。
+    """
+    city = _clean_city(str(arguments.get("city") or ""))
+    if not city:
+        return "缺少城市名：请提供 city 参数，例如「北京」「上海」。"
+    if not host.has("http.outbound"):
+        return "当前机器人未获批「访问外网」能力，天气查询不可用。"
+
+    # days 参数语义与配置一致：-1 只显示实时；0 或不传按插件配置（通常 3 天）；
+    # 正数取 1~7 天。非法值按没传处理，不因一个坏参数让整次查询失败。
+    days = _forecast_days(host)
+    raw_days = arguments.get("days")
+    if raw_days is not None:
+        try:
+            requested = int(float(str(raw_days)))
+        except (TypeError, ValueError):
+            requested = 0
+        if requested < 0:
+            days = 0
+        elif requested > 0:
+            days = min(requested, MAX_FORECAST_DAYS)
+
+    unit = _choice(host, "temperature_unit", "摄氏度")
+    try:
+        place = await _geocode(host, city)
+        if place is None:
+            return f"没有找到「{city}」这个城市，请换个写法，例如「北京」「上海」。"
+        payload = await _fetch_weather(host, place, days, unit)
+        if payload is None:
+            return "天气服务返回异常，请稍后再试。"
+        report = _format_report(place, payload, days, unit)
+        host.log(f"AI 工具已返回天气：{place['label']}")
+        return report
+    except PluginCallError as error:
+        host.log(f"AI 工具出网请求被拒绝或失败：{error}", "error")
+        return "天气服务暂时不可用，请稍后再试。"
+    except Exception as error:  # 插件内部兜底，不让异常冒到宿主
+        host.log(f"AI 工具异常：{type(error).__name__}: {error}", "error")
+        return "查询天气时出错了，请稍后再试。"

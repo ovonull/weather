@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "cn.ucbk.weather",
   "name": "天气查询",
-  "version": "1.1.1",
-  "description": "在群聊或私聊发送「天气 北京」即可查询实时天气与未来几天预报，数据来自 Open-Meteo，无需申请 API Key。\n\n用法：\n1. 发送「天气 城市名」查询指定城市；\n2. 只发送「天气」时查询默认城市，需先在插件配置里填写默认城市；\n3. 也支持「北京天气」这种写法，触发词可以在插件配置里修改；\n4. 默认带未来 3 天预报，天数可在配置里调整，填 -1 表示只显示实时天气；\n5. 同一会话在冷却时间内重复查询同一个城市会被忽略，避免刷屏。\n\n出网域名：geocoding-api.open-meteo.com 用于城市名解析，api.open-meteo.com 用于取天气数据。",
+  "version": "1.2.0",
+  "description": "在群聊或私聊发送「天气 北京」即可查询实时天气与未来几天预报，也可作为 AI 工具由模型直接调用，数据来自 Open-Meteo，无需申请 API Key。\n\n用法：\n1. 发送「天气 城市名」查询指定城市；\n2. 只发送「天气」时查询默认城市，需先在插件配置里填写默认城市；\n3. 也支持「北京天气」这种写法，触发词可以在插件配置里修改；\n4. 默认带未来 3 天预报，天数可在配置里调整，填 -1 表示只显示实时天气；\n5. 同一会话在冷却时间内重复查询同一个城市会被忽略，避免刷屏；\n6. 在机器人 AI 配置勾选「插件工具」后，模型可直接调用 weather_query 查询天气。\n\n出网域名：geocoding-api.open-meteo.com 用于城市名解析，api.open-meteo.com 用于取天气数据。",
   "author": {
     "name": "UCBK",
     "url": "https://www.ucbk.cn"
@@ -63,6 +63,22 @@
       "type": "number",
       "required": false,
       "sensitive": false
+    }
+  ],
+  "ai_tools": [
+    {
+      "name": "weather_query",
+      "description": "查询城市实时天气与未来几天预报，返回中文天气报告。用户问天气、气温、体感、要不要带伞、未来几天会不会下雨时调用；参数 city 为城市名（如「北京」），days 为预报天数（-1 只显示实时天气），days 不传时用插件配置。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": { "type": "string", "description": "城市名，如「北京」「上海」" },
+          "days": { "type": "integer", "description": "预报天数：-1 只显示实时天气；不传用插件配置（通常 3 天）" }
+        },
+        "required": ["city"]
+      },
+      "timeout": 15,
+      "result_limit": 3000
     }
   ]
 }
