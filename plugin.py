@@ -1,44 +1,31 @@
-"""
-天气查询插件。
+"""天气查询：只给 AI 提供工具，不自己听消息、不自己发消息。
 
-功能：
-1. 群里或私聊发「天气 北京」查询实时天气，只发「天气」时查配置里的默认城市；
-2. 支持「北京天气」「今天北京天气怎么样」这几种写法，触发词可在配置里改；
-3. 默认带未来 3 天预报，天数可调，-1 表示只显示实时天气；
-4. 温度单位、生效范围、同一会话冷却都由安装配置控制；
-5. 也可作为 AI 工具（@on_tool weather_query）由模型直接调用，返回报告文本
-   给模型组织回复，不替代事件触发的主动回复。
+模型在对话里问天气时调用 ``weather_query``，插件返回整理好的中文报告，由 AI
+按人设组织回复。清单里声明了 ``keywords``：消息里出现「天气」「气温」这类词时，
+宿主会把这一轮强制交给 AI 并点名调这个工具——和视频解析靠 ``link_hosts`` 触发
+是同一套机制，不需要用户带触发词格式，也不经过接话评分。
 
-约定：
-- 城市解析走 geocoding-api.open-meteo.com，天气数据走 api.open-meteo.com，都不需要 API Key；
-- 出网一律走 host.http_request，域名受清单白名单约束；
-- 任何失败都回一条中文提示，不向宿主抛裸异常，避免整条事件判定为失败；
-- 不直接调用 OneBot，发消息一律通过 host 完成。
+配置项：默认城市（用户没说城市时用）、预报天数、温度单位。出网走
+host.http_request，城市解析用 geocoding-api.open-meteo.com，天气用
+api.open-meteo.com，都不需要 Key。
 """
 
 from __future__ import annotations
 
-import time
 from datetime import date
 from typing import Any
 
-from app.services.plugin_sdk import PluginCallError, on_message, on_tool
+from app.services.plugin_sdk import PluginCallError, on_tool
 
-
-DEFAULT_TRIGGERS = "天气"
 DEFAULT_FORECAST_DAYS = 3
-DEFAULT_COOLDOWN = 20
 
-MAX_TRIGGER_COUNT = 10
 MAX_FORECAST_DAYS = 7
-MAX_COOLDOWN = 300
 MAX_CITY_LENGTH = 30
 
 REQUEST_TIMEOUT = 10.0
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-# WMO 天气代码，Open-Meteo 的 weather_code 就是这套编码。
 WEATHER_TEXT = {
     0: "晴",
     1: "晴间多云",
@@ -72,28 +59,6 @@ WEATHER_TEXT = {
 
 WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
-# 口语里常跟在城市前面的时间/语气词，取城市名时先剥掉，避免「今天北京」查不到。
-CITY_PREFIXES = (
-    "今天",
-    "明天",
-    "后天",
-    "现在",
-    "当前",
-    "今日",
-    "请问",
-    "帮我查一下",
-    "帮我查",
-    "查一下",
-    "查查",
-    "看一下",
-    "看看",
-    "我想知道",
-)
-
-# 会话级冷却：同一会话在冷却时间内查同一个城市会被忽略，避免刷屏。
-_last_reply: dict[str, tuple[float, str]] = {}
-
-
 def _text_config(host: Any, key: str, default: str) -> str:
     """读取文本型配置，缺失时返回默认值。"""
     value = host.config.get(key)
@@ -104,19 +69,6 @@ def _text_config(host: Any, key: str, default: str) -> str:
 def _choice(host: Any, key: str, default: str) -> str:
     """读取下拉型配置，空值按默认项处理。"""
     return _text_config(host, key, default)
-
-
-def _int_config(host: Any, key: str, default: int, low: int, high: int) -> int:
-    """读取数字型配置，空值取默认值，非法或越界时夹到允许范围内。"""
-    raw = host.config.get(key)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = int(float(str(raw).strip()))
-    except (TypeError, ValueError):
-        return default
-    return max(low, min(value, high))
-
 
 def _forecast_days(host: Any) -> int:
     """
@@ -138,103 +90,10 @@ def _forecast_days(host: Any) -> int:
         return DEFAULT_FORECAST_DAYS
     return min(value, MAX_FORECAST_DAYS)
 
-
-def _message_text(event: dict[str, Any]) -> str:
-    """从事件里取出纯文本，数组消息只拼接 text 段。"""
-    message = event.get("message")
-    if isinstance(message, str):
-        text = message
-    elif isinstance(message, list):
-        parts: list[str] = []
-        for segment in message:
-            if isinstance(segment, dict) and segment.get("type") == "text":
-                data = segment.get("data") or {}
-                parts.append(str(data.get("text") or ""))
-        text = "".join(parts)
-    else:
-        text = str(event.get("raw_message") or "")
-    # NapCat 在 @ 之后可能插入特殊空格，统一成普通空格再处理。
-    return text.replace("\u2005", " ").replace("\xa0", " ").strip()
-
-
-def _parse_triggers(raw: str) -> list[str]:
-    """把配置里的触发词拆开，兼容中英文逗号与分号，长的优先匹配。"""
-    normalized = raw.replace("，", ",").replace("；", ",").replace(";", ",")
-    words = [item.strip() for item in normalized.split(",") if item.strip()]
-    if not words:
-        words = [DEFAULT_TRIGGERS]
-    # 「天气查询」要排在「天气」前面，否则永远匹配到短的那个。
-    words.sort(key=len, reverse=True)
-    return words[:MAX_TRIGGER_COUNT]
-
-
 def _clean_city(raw: str) -> str:
     """清掉城市名两侧的标点与空白，并限制长度。"""
     text = raw.strip(" \t\r\n。．，,、；;：:！!？?~～\"'“”（）()")
     return text[:MAX_CITY_LENGTH]
-
-
-def _strip_prefixes(text: str) -> str:
-    """反复剥掉「今天」「帮我查」这类前缀，剩下的当城市名。"""
-    current = text
-    changed = True
-    while changed and current:
-        changed = False
-        for prefix in CITY_PREFIXES:
-            if current.startswith(prefix) and len(current) > len(prefix):
-                current = current[len(prefix):]
-                changed = True
-                break
-    return _clean_city(current)
-
-
-def _split_city(text: str, triggers: list[str]) -> str | None:
-    """
-    从消息里取出城市名。
-
-    Returns:
-        城市名；返回空串表示只发了触发词（查默认城市）；None 表示这条消息不是查询天气。
-    """
-    clean = text.strip(" \t\r\n。．，,！!？?~～")
-    for word in triggers:
-        if clean == word:
-            return ""
-        if clean.startswith(word):
-            return _strip_prefixes(_clean_city(clean[len(word):]))
-        if clean.endswith(word):
-            return _strip_prefixes(_clean_city(clean[: -len(word)]))
-    # 「今天北京天气怎么样」这类口语：触发词夹在中间，取它前面那截。
-    for word in triggers:
-        index = clean.find(word)
-        if index > 0:
-            candidate = _strip_prefixes(_clean_city(clean[:index]))
-            if candidate:
-                return candidate
-    return None
-
-
-def _chat_key(host: Any, event: dict[str, Any]) -> str:
-    """会话标识：群聊按群号，私聊按用户号。"""
-    chat_id = (
-        event.get("group_id")
-        if event.get("message_type") == "group"
-        else event.get("user_id")
-    )
-    return f"{host.bot_qq}:{chat_id}"
-
-
-def _duplicated(host: Any, event: dict[str, Any], city: str, seconds: int) -> bool:
-    """同一会话在冷却时间内重复查同一个城市时直接忽略。"""
-    if seconds <= 0:
-        return False
-    key = _chat_key(host, event)
-    now = time.time()
-    last = _last_reply.get(key)
-    if last and now - last[0] < seconds and last[1] == city:
-        return True
-    _last_reply[key] = (now, city)
-    return False
-
 
 def _unit_symbol(unit: str) -> str:
     """温度单位符号。"""
@@ -263,20 +122,6 @@ def _value_at(values: Any, index: int) -> Any:
     if isinstance(values, list) and 0 <= index < len(values):
         return values[index]
     return None
-
-
-def _as_text(value: str) -> dict[str, Any]:
-    """构造文本消息段。"""
-    return {"type": "text", "data": {"text": value}}
-
-
-async def _reply(host: Any, event: dict[str, Any], message: Any) -> None:
-    """按会话类型把消息发回去。"""
-    if event.get("message_type") == "group":
-        await host.send_group_msg(event.get("group_id"), message)
-    else:
-        await host.send_private_msg(event.get("user_id"), message)
-
 
 async def _geocode(host: Any, city: str) -> dict[str, Any] | None:
     """
@@ -424,87 +269,6 @@ def _format_report(
         for index, day_text in enumerate(times[:days]):
             lines.append(_daily_line(daily, index, str(day_text), unit))
     return "\n".join(lines)
-
-
-@on_message
-async def handle_weather(event: dict[str, Any], host: Any) -> None:
-    """收到消息时判断是不是查天气，命中就回一条实时天气加预报。"""
-    if event.get("post_type") != "message":
-        return
-    if str(event.get("user_id")) == str(event.get("self_id")):
-        # 机器人自己发的消息不处理，避免自我循环。
-        return
-
-    scope = _choice(host, "reply_scope", "群聊与私聊")
-    is_group = event.get("message_type") == "group"
-    if (scope == "仅群聊" and not is_group) or (scope == "仅私聊" and is_group):
-        return
-
-    text = _message_text(event)
-    if not text:
-        return
-
-    triggers = _parse_triggers(_text_config(host, "trigger_words", DEFAULT_TRIGGERS))
-    city = _split_city(text, triggers)
-    if city is None:
-        return
-
-    # msg.send 既是回消息的前提，也是 claim_message() 的授权前提，先确认。
-    if not host.has("msg.send"):
-        host.log("缺少 msg.send 能力，无法回复", "error")
-        return
-
-    if not city:
-        city = _clean_city(_text_config(host, "default_city", ""))
-        if not city:
-            await _reply(
-                host,
-                event,
-                f"用法：{triggers[0]} 北京，或先在插件配置里填写默认城市。",
-            )
-            return
-
-    cooldown = _int_config(host, "cooldown_seconds", DEFAULT_COOLDOWN, 0, MAX_COOLDOWN)
-    if _duplicated(host, event, city, cooldown):
-        host.log(f"同一城市在冷却中，忽略：{city}")
-        return
-
-    # 到这里才确定「这条消息由插件来答」，这时才抢占：AI 回复是另一条并行
-    # 链路，不声明的话它可能同时回一句；而冷却中被忽略的重复查询不该占住
-    # 消息，否则插件不回、AI 也不回，群里就彻底没声了。
-    if not await host.claim_message():
-        host.log("该消息已被其它插件接管，跳过天气查询")
-        return
-
-    if not host.has("http.outbound"):
-        host.log("缺少 http.outbound 能力，无法查询天气", "error")
-        await _reply(host, event, "本机器人未获批「访问外网」能力，天气查询不可用。")
-        return
-
-    unit = _choice(host, "temperature_unit", "摄氏度")
-    days = _forecast_days(host)
-    try:
-        place = await _geocode(host, city)
-        if place is None:
-            await _reply(
-                host,
-                event,
-                f"没有找到「{city}」这个城市，换个写法试试，比如「{triggers[0]} 北京」。",
-            )
-            return
-        payload = await _fetch_weather(host, place, days, unit)
-        if payload is None:
-            await _reply(host, event, "天气服务返回异常，请稍后再试。")
-            return
-        await _reply(host, event, _as_text(_format_report(place, payload, days, unit)))
-        host.log(f"已回复天气：{place['label']}")
-    except PluginCallError as error:
-        host.log(f"出网请求被拒绝或失败：{error}", "error")
-        await _reply(host, event, "天气服务暂时不可用，请稍后再试。")
-    except Exception as error:  # 插件内部兜底，不让异常冒到宿主
-        host.log(f"天气插件异常：{type(error).__name__}: {error}", "error")
-        await _reply(host, event, "查询天气时出错了，请稍后再试。")
-
 
 @on_tool("weather_query")
 async def weather_query(arguments: dict, host: Any) -> str:

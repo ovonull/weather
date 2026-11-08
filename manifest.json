@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "cn.ucbk.weather",
   "name": "天气查询",
-  "version": "1.2.1",
-  "description": "在群聊或私聊发送「天气 北京」即可查询实时天气与未来几天预报，也可作为 AI 工具由模型直接调用，数据来自 Open-Meteo，无需申请 API Key。\n\n用法：\n1. 发送「天气 城市名」查询指定城市；\n2. 只发送「天气」时查询默认城市，需先在插件配置里填写默认城市；\n3. 也支持「北京天气」这种写法，触发词可以在插件配置里修改；\n4. 默认带未来 3 天预报，天数可在配置里调整，填 -1 表示只显示实时天气；\n5. 同一会话在冷却时间内重复查询同一个城市会被忽略，避免刷屏；\n6. 在机器人 AI 配置勾选「插件工具」后，模型可直接调用 weather_query 查询天气。\n\n出网域名：geocoding-api.open-meteo.com 用于城市名解析，api.open-meteo.com 用于取天气数据。",
+  "version": "1.2.2",
+  "description": "把实时天气与未来几天预报交给 AI 回答，数据来自 Open-Meteo，无需申请 API Key。\n\n工作方式（与视频解析一致，插件自己不听消息、不发消息）：\n1. 清单里声明了 keywords（天气、气温、下雨、带伞、降水）。消息里出现这些词时，宿主把这一轮强制交给 AI，并在提示里点名调用 weather_query；\n2. 模型带上城市名调用工具，插件解析城市、取天气、返回一段中文报告，由 AI 按人设组织回复；\n3. 用户没说城市时用插件配置里的默认城市；没说天数时用配置的预报天数；\n4. 机器人没开 AI 回复时插件不会被触发——它不是关键词自动回复插件。\n\n需要在 机器人管理 → AI 配置 → 智能体 里勾选「插件工具」，模型才有这个工具可用。\n\n出网域名：geocoding-api.open-meteo.com 用于城市名解析，api.open-meteo.com 用于取天气数据。",
   "author": {
     "name": "UCBK",
     "url": "https://www.ucbk.cn"
@@ -12,7 +12,6 @@
   "homepage": "https://www.ucbk.cn",
   "entry": "plugin.py",
   "capabilities": [
-    "msg.send",
     "http.outbound"
   ],
   "allowed_domains": [
@@ -21,15 +20,8 @@
   ],
   "config_schema": [
     {
-      "key": "trigger_words",
-      "label": "触发词（英文逗号分隔）",
-      "type": "text",
-      "required": false,
-      "sensitive": false
-    },
-    {
       "key": "default_city",
-      "label": "默认城市（留空则必须带上城市名）",
+      "label": "默认城市（用户没说城市时用，留空则必须带上城市名）",
       "type": "text",
       "required": false,
       "sensitive": false
@@ -48,21 +40,6 @@
       "required": false,
       "sensitive": false,
       "options": ["摄氏度", "华氏度"]
-    },
-    {
-      "key": "reply_scope",
-      "label": "生效范围",
-      "type": "select",
-      "required": false,
-      "sensitive": false,
-      "options": ["群聊与私聊", "仅群聊", "仅私聊"]
-    },
-    {
-      "key": "cooldown_seconds",
-      "label": "同一会话回复冷却（秒，0 表示不冷却）",
-      "type": "number",
-      "required": false,
-      "sensitive": false
     }
   ],
   "ai_tools": [
@@ -78,7 +55,8 @@
         "required": ["city"]
       },
       "timeout": 15,
-      "result_limit": 3000
+      "result_limit": 3000,
+      "keywords": ["天气", "气温", "下雨", "带伞", "降水"]
     }
   ]
 }
