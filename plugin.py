@@ -449,18 +449,9 @@ async def handle_weather(event: dict[str, Any], host: Any) -> None:
     if city is None:
         return
 
-    # 确认这条是天气查询，抢占处理权：AI 回复是另一条并行链路，
-    # 不声明的话它可能同时回一句不相关的内容。
-    if not await host.claim_message():
-        host.log("该消息已被其它插件接管，跳过天气查询")
-        return
-
+    # msg.send 既是回消息的前提，也是 claim_message() 的授权前提，先确认。
     if not host.has("msg.send"):
         host.log("缺少 msg.send 能力，无法回复", "error")
-        return
-    if not host.has("http.outbound"):
-        host.log("缺少 http.outbound 能力，无法查询天气", "error")
-        await _reply(host, event, "本机器人未获批「访问外网」能力，天气查询不可用。")
         return
 
     if not city:
@@ -476,6 +467,18 @@ async def handle_weather(event: dict[str, Any], host: Any) -> None:
     cooldown = _int_config(host, "cooldown_seconds", DEFAULT_COOLDOWN, 0, MAX_COOLDOWN)
     if _duplicated(host, event, city, cooldown):
         host.log(f"同一城市在冷却中，忽略：{city}")
+        return
+
+    # 到这里才确定「这条消息由插件来答」，这时才抢占：AI 回复是另一条并行
+    # 链路，不声明的话它可能同时回一句；而冷却中被忽略的重复查询不该占住
+    # 消息，否则插件不回、AI 也不回，群里就彻底没声了。
+    if not await host.claim_message():
+        host.log("该消息已被其它插件接管，跳过天气查询")
+        return
+
+    if not host.has("http.outbound"):
+        host.log("缺少 http.outbound 能力，无法查询天气", "error")
+        await _reply(host, event, "本机器人未获批「访问外网」能力，天气查询不可用。")
         return
 
     unit = _choice(host, "temperature_unit", "摄氏度")
